@@ -71,9 +71,13 @@ export default function FloodAlertButton() {
     <>
       <button
         onClick={() => setIsOpen(true)}
-        className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg shadow-red-500/30 flex items-center justify-center gap-3 transition-transform active:scale-95 border-2 border-red-500"
+        className="relative w-full bg-red-600 hover:bg-red-700 text-white font-bold rounded-2xl shadow-[0_0_20px_rgba(239,68,68,0.3)] transition-all duration-200 active:scale-95 overflow-hidden group py-4"
       >
-        <span className="text-xl">Report Flooded Route</span>
+        <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/15 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700 ease-in-out" />
+        <span className="relative z-10 flex items-center justify-center gap-2 text-base font-bold">
+          ⚠️ Report Road Hazard
+        </span>
+        <p className="relative z-10 text-white/60 text-xs font-normal mt-0.5">Accidents · Flooding · Obstructions</p>
       </button>
 
       {isOpen && (

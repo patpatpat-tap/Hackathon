@@ -6,138 +6,208 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import { createClient } from '@/app/utils/supabase';
 
+// ─── MOCK DATASET ─────────────────────────────────────────────────────────────
+// Realistic ride-request hotspots around Cebu's BPO corridors.
+// Format: [lat, lng, intensity]  (intensity 0–1)
+const MOCK_PINGS: [number, number, number][] = [
+  // IT Park cluster (highest demand — main BPO hub)
+  [10.3310, 123.9050, 1.0],
+  [10.3318, 123.9045, 0.95],
+  [10.3305, 123.9060, 0.9],
+  [10.3325, 123.9035, 0.85],
+  [10.3300, 123.9070, 0.8],
+  [10.3315, 123.9080, 0.75],
+  [10.3295, 123.9055, 0.85],
+  [10.3330, 123.9065, 0.7],
+  [10.3308, 123.9040, 0.9],
+  [10.3322, 123.9075, 0.65],
+
+  // Ayala Center Cebu cluster
+  [10.3179, 123.9054, 0.85],
+  [10.3185, 123.9060, 0.8],
+  [10.3172, 123.9048, 0.75],
+  [10.3190, 123.9042, 0.7],
+  [10.3176, 123.9068, 0.65],
+  [10.3168, 123.9055, 0.6],
+
+  // SM City Cebu cluster
+  [10.3113, 123.9183, 0.75],
+  [10.3120, 123.9190, 0.7],
+  [10.3106, 123.9178, 0.65],
+  [10.3125, 123.9175, 0.6],
+  [10.3108, 123.9195, 0.55],
+
+  // Fuente Osmeña cluster
+  [10.3100, 123.8930, 0.65],
+  [10.3108, 123.8938, 0.6],
+  [10.3093, 123.8925, 0.55],
+  [10.3115, 123.8920, 0.5],
+
+  // Colon Street / downtown cluster
+  [10.2954, 123.8972, 0.55],
+  [10.2960, 123.8980, 0.5],
+  [10.2948, 123.8965, 0.45],
+  [10.2966, 123.8975, 0.4],
+
+  // Mandaue / MEPZ overflow
+  [10.3390, 123.9340, 0.45],
+  [10.3398, 123.9348, 0.4],
+  [10.3382, 123.9332, 0.35],
+
+  // Scattered mid-city requests
+  [10.3240, 123.9100, 0.5],
+  [10.3260, 123.9080, 0.45],
+  [10.3220, 123.9120, 0.4],
+  [10.3155, 123.9010, 0.5],
+  [10.3210, 123.9000, 0.4],
+  [10.3270, 123.8990, 0.35],
+];
+
+// Mock road hazards for demo
+const MOCK_HAZARDS = [
+  {
+    id: 'hazard-1',
+    label: '🚗 Accident — Lane Blocked',
+    markerLat: 10.3262,
+    markerLng: 123.9072,
+    reported: new Date(Date.now() - 18 * 60 * 1000).toISOString(),
+  },
+  {
+    id: 'hazard-2',
+    label: '🌊 Flooding — Road Impassable',
+    markerLat: 10.3390,
+    markerLng: 123.9330,
+    reported: new Date(Date.now() - 7 * 60 * 1000).toISOString(),
+  },
+];
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function HeatmapComponent() {
   const mapRef = useRef<L.Map | null>(null);
   const heatLayerRef = useRef<any>(null);
-  const alertsLayerGroupRef = useRef<L.LayerGroup | null>(null);
-  const [pings, setPings] = useState<any[]>([]);
-  const [floodAlerts, setFloodAlerts] = useState<any[]>([]);
-  const [activeDrivers, setActiveDrivers] = useState(0);
+  const hazardsLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const [activeRequests, setActiveRequests] = useState(MOCK_PINGS.length);
+  const [lastUpdated, setLastUpdated] = useState(new Date());
 
   useEffect(() => {
-    // Initialize map (centered on IT Park Cebu)
+    // ── Initialize map ──────────────────────────────────────────────────────
     if (!mapRef.current) {
-      mapRef.current = L.map('map-container').setView([10.3157, 123.8854], 14);
+      mapRef.current = L.map('map-container').setView([10.3200, 123.9050], 13);
 
       L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© OpenStreetMap',
+        attribution: '© OpenStreetMap © CartoDB',
         subdomains: 'abcd',
         maxZoom: 20,
       }).addTo(mapRef.current);
-      
-      alertsLayerGroupRef.current = L.layerGroup().addTo(mapRef.current);
+
+      hazardsLayerGroupRef.current = L.layerGroup().addTo(mapRef.current);
     }
 
-    const supabase = createClient();
-
-    // Fetch initial pings and alerts
-    const fetchData = async () => {
-      const { data: pingsData } = await supabase
-        .from('pings')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
-
-      if (pingsData) setPings(pingsData);
-
-      const { data: alertsData } = await supabase
-        .from('flood_alerts')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
-        
-      if (alertsData) setFloodAlerts(alertsData);
-    };
-
-    fetchData();
-
-    // Subscribe to real-time updates for pings
-    const pingsSubscription = supabase
-      .channel('pings_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pings' }, (payload) => {
-        setPings((prev) => [payload.new, ...prev.slice(0, 99)]);
-      })
-      .subscribe();
-      
-    // Subscribe to real-time updates for flood alerts
-    const alertsSubscription = supabase
-      .channel('alerts_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'flood_alerts' }, (payload) => {
-        setFloodAlerts((prev) => [payload.new, ...prev.slice(0, 49)]);
-      })
-      .subscribe();
-
-    return () => {
-      pingsSubscription.unsubscribe();
-      alertsSubscription.unsubscribe();
-    };
-  }, []);
-
-  // Update heatmap whenever pings change
-  useEffect(() => {
-    if (mapRef.current && pings.length > 0) {
-      // Convert pings to heatmap format [lat, lng, intensity]
-      const heatmapData = pings.map((ping) => [
-        parseFloat(ping.lat),
-        parseFloat(ping.lng),
-        0.8, // Intensity (0-1)
-      ]);
-
-      // Remove old heatmap layer
+    // ── Render mock heatmap ─────────────────────────────────────────────────
+    if (mapRef.current) {
       if (heatLayerRef.current) {
         mapRef.current.removeLayer(heatLayerRef.current);
       }
 
-      // Add new heatmap layer
-      heatLayerRef.current = L.heatLayer(heatmapData, {
-        radius: 40,
-        blur: 25,
+      heatLayerRef.current = (L as any).heatLayer(MOCK_PINGS, {
+        radius: 38,
+        blur: 28,
         maxZoom: 17,
+        max: 1.0,
         gradient: {
-          0: '#00ff00', // Green (low)
-          0.5: '#ffff00', // Yellow (medium)
-          1: '#ff0000', // Red (high)
+          0.0: '#00ff00',  // Green — low demand
+          0.4: '#aaff00',
+          0.6: '#ffff00',  // Yellow — medium
+          0.8: '#ff8800',
+          1.0: '#ff0000',  // Red — high demand
         },
       }).addTo(mapRef.current);
-
-      setActiveDrivers(pings.length);
     }
-  }, [pings]);
 
-  // Update flood alerts layer
-  useEffect(() => {
-    if (mapRef.current && alertsLayerGroupRef.current) {
-      alertsLayerGroupRef.current.clearLayers();
+    // ── Render road hazards: pins only ────────────────────────────────────────
+    if (hazardsLayerGroupRef.current) {
+      hazardsLayerGroupRef.current.clearLayers();
 
-      floodAlerts.forEach((alert) => {
-        const isFlood = alert.type === 'flood';
-        const color = isFlood ? '#3b82f6' : '#8b5cf6'; // Blue for flood, Purple for rainfall
-        
-        // Add a circle for the zone
-        L.circle([parseFloat(alert.lat), parseFloat(alert.lng)], {
-          color: color,
-          fillColor: color,
-          fillOpacity: 0.4,
-          radius: 150, // 150 meters radius
-          weight: 2,
-        }).addTo(alertsLayerGroupRef.current!);
-
-        // Add a marker in the center
-        const iconHtml = `<div style="background-color: ${color}; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px ${color}; font-size: 12px; font-weight: bold; color: white;">!</div>`;
-        
+      MOCK_HAZARDS.forEach((hazard) => {
+        // Hazard pin icon
+        const iconHtml = `<div style="background:#ef4444;width:28px;height:28px;border-radius:50%;border:2px solid white;display:flex;align-items:center;justify-content:center;box-shadow:0 0 14px rgba(239,68,68,0.8);font-size:14px;">⚠️</div>`;
         const customIcon = L.divIcon({
           html: iconHtml,
-          className: 'custom-alert-icon',
-          iconSize: [24, 24],
-          iconAnchor: [12, 12],
+          className: 'custom-hazard-icon',
+          iconSize: [28, 28],
+          iconAnchor: [14, 14],
         });
 
-        L.marker([parseFloat(alert.lat), parseFloat(alert.lng)], { icon: customIcon })
-          .bindPopup(`<b>${isFlood ? 'Flooded Route' : 'Heavy Rainfall'}</b><br/>Reported at ${new Date(alert.created_at).toLocaleTimeString()}`)
-          .addTo(alertsLayerGroupRef.current!);
+        L.marker([hazard.markerLat, hazard.markerLng], { icon: customIcon })
+          .bindPopup(`<b>${hazard.label}</b><br/>Reported ${new Date(hazard.reported).toLocaleTimeString()}`)
+          .addTo(hazardsLayerGroupRef.current!);
       });
     }
-  }, [floodAlerts]);
+
+    // ── Try to merge real Supabase data on top if available ─────────────────
+    const supabase = createClient();
+
+    const fetchLiveData = async () => {
+      try {
+        const { data: pingsData } = await supabase
+          .from('pings')
+          .select('lat,lng')
+          .order('created_at', { ascending: false })
+          .limit(100);
+
+        if (pingsData && pingsData.length > 0 && mapRef.current) {
+          const livePings: [number, number, number][] = pingsData.map((p) => [
+            parseFloat(p.lat),
+            parseFloat(p.lng),
+            1.0,
+          ]);
+
+          const combined = [...MOCK_PINGS, ...livePings];
+
+          if (heatLayerRef.current) mapRef.current.removeLayer(heatLayerRef.current);
+
+          heatLayerRef.current = (L as any).heatLayer(combined, {
+            radius: 38,
+            blur: 28,
+            maxZoom: 17,
+            max: 1.0,
+            gradient: {
+              0.0: '#00ff00',
+              0.4: '#aaff00',
+              0.6: '#ffff00',
+              0.8: '#ff8800',
+              1.0: '#ff0000',
+            },
+          }).addTo(mapRef.current);
+
+          setActiveRequests(combined.length);
+          setLastUpdated(new Date());
+        }
+
+        // Real-time: subscribe to new pings
+        supabase
+          .channel('pings_realtime')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pings' }, (payload) => {
+            if (mapRef.current && heatLayerRef.current) {
+              const newPoint: [number, number, number] = [
+                parseFloat(payload.new.lat),
+                parseFloat(payload.new.lng),
+                1.0,
+              ];
+              // @ts-ignore
+              heatLayerRef.current.addLatLng(newPoint);
+              setActiveRequests((prev) => prev + 1);
+              setLastUpdated(new Date());
+            }
+          })
+          .subscribe();
+      } catch {
+        // Supabase not configured — mock data still renders
+      }
+    };
+
+    fetchLiveData();
+  }, []);
 
   return (
     <div className="w-full h-screen flex flex-col bg-black relative font-sans">
@@ -145,8 +215,8 @@ export default function HeatmapComponent() {
       <div className="bg-[#0b0f19] border-b border-yellow-400 py-4 px-6 flex items-center justify-between z-10">
         <div>
           <h1 className="text-2xl font-bold text-yellow-400 tracking-wide">SugboPulse Driver Map</h1>
-          <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
-            {activeDrivers} Active Requests
+          <p className="text-gray-400 text-sm mt-1">
+            {activeRequests} Active Requests
           </p>
         </div>
         <a
@@ -160,36 +230,44 @@ export default function HeatmapComponent() {
       {/* Map Container */}
       <div id="map-container" className="flex-1 z-0" />
 
-      {/* Legend - Fixed Positioning (Bottom Left) */}
+      {/* Legend */}
       <div className="absolute bottom-8 left-6 w-48 bg-black/90 border border-yellow-400 rounded-lg p-4 text-white z-[1000] shadow-lg backdrop-blur-sm">
         <h3 className="font-bold text-yellow-400 mb-4 text-sm tracking-widest uppercase">Demand Levels</h3>
         <div className="space-y-3 text-sm">
           <div className="flex items-center gap-3">
-            <div className="w-4 h-4 bg-[#00ff00] rounded flex-shrink-0 shadow-[0_0_8px_rgba(0,255,0,0.6)]"></div>
+            <div className="w-4 h-4 bg-[#00ff00] rounded flex-shrink-0 shadow-[0_0_8px_rgba(0,255,0,0.6)]" />
             <span className="text-gray-300 font-medium">Low</span>
           </div>
           <div className="flex items-center gap-3">
-            <div className="w-4 h-4 bg-[#ffff00] rounded flex-shrink-0 shadow-[0_0_8px_rgba(255,255,0,0.6)]"></div>
+            <div className="w-4 h-4 bg-[#ffff00] rounded flex-shrink-0 shadow-[0_0_8px_rgba(255,255,0,0.6)]" />
             <span className="text-gray-300 font-medium">Medium</span>
           </div>
           <div className="flex items-center gap-3">
-            <div className="w-4 h-4 bg-[#ff3333] rounded flex-shrink-0 shadow-[0_0_8px_rgba(255,51,51,0.6)]"></div>
+            <div className="w-4 h-4 bg-[#ff3333] rounded flex-shrink-0 shadow-[0_0_8px_rgba(255,51,51,0.6)]" />
             <span className="text-gray-300 font-medium">High</span>
+          </div>
+          <div className="flex items-center gap-3 pt-2 border-t border-gray-700">
+            <div className="w-4 h-4 bg-[#ef4444] rounded flex-shrink-0 shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+            <span className="text-gray-300 font-medium">Road Hazard</span>
           </div>
         </div>
       </div>
 
-      {/* Stats Panel - Fixed Positioning (Top Right) */}
+      {/* Stats Panel */}
       <div className="absolute top-24 right-6 w-56 bg-black/90 border border-yellow-400 rounded-lg p-5 text-white z-[1000] shadow-lg backdrop-blur-sm">
         <h3 className="font-bold text-yellow-400 mb-4 text-sm tracking-widest uppercase">Live Stats</h3>
         <div className="space-y-4">
           <div>
             <div className="text-gray-400 text-xs mb-1">Active Requests</div>
-            <div className="text-white font-bold text-xl">{activeDrivers}</div>
+            <div className="text-white font-bold text-xl">{activeRequests}</div>
+          </div>
+          <div>
+            <div className="text-gray-400 text-xs mb-1">Road Hazards</div>
+            <div className="text-white font-bold text-xl">{MOCK_HAZARDS.length}</div>
           </div>
           <div>
             <div className="text-gray-400 text-xs mb-1">Last Updated</div>
-            <div className="text-white text-sm">{new Date().toLocaleTimeString()}</div>
+            <div className="text-white text-sm">{lastUpdated.toLocaleTimeString()}</div>
           </div>
         </div>
       </div>
