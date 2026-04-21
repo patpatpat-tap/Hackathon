@@ -2,6 +2,7 @@
 
 import PingButton from '@/app/components/PingButton';
 import SavingsCard from '@/app/components/SavingsCard';
+import FloodAlertButton from '@/app/components/FloodAlertButton';
 
 export default function Home() {
   return (
@@ -17,7 +18,7 @@ export default function Home() {
             href="/driver"
             className="bg-yellow-400 hover:bg-yellow-500 text-black font-bold px-6 py-3 rounded-lg transition-colors"
           >
-            🚗 Driver View
+            Driver View
           </a>
         </div>
       </header>
@@ -29,19 +30,24 @@ export default function Home() {
 
         {/* Status Section */}
         <div className="bg-gray-900 border-2 border-yellow-400 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-bold text-yellow-400 mb-4">📍 Your Shift Status</h2>
+          <h2 className="text-xl font-bold text-yellow-400 mb-4">Your Shift Status</h2>
           <p className="text-gray-300 mb-4">
             Tap the button below to log your shift and notify nearby drivers that you need a ride.
           </p>
           <div className="bg-black/50 rounded p-3 border border-yellow-400">
             <p className="text-sm text-yellow-300">
-              💡 <strong>Tip:</strong> Make sure your location is enabled on your device for best results!
+              <strong>Tip:</strong> Make sure your location is enabled on your device for best results!
             </p>
           </div>
         </div>
 
         {/* Ping Button - The Main Action */}
         <PingButton />
+
+        {/* Flood Alert Button */}
+        <div className="mt-4">
+          <FloodAlertButton />
+        </div>
 
         {/* Quick Stats */}
         <div className="grid grid-cols-2 gap-4 mt-8">
@@ -59,7 +65,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="bg-gray-900 border-t border-yellow-400 py-4 px-4 mt-8">
         <div className="max-w-2xl mx-auto text-center text-gray-400 text-sm">
-          <p>🌍 Smart Commuting for Cebu's Night Shift Workers</p>
+          <p>Smart Commuting for Cebu's Night Shift Workers</p>
         </div>
       </footer>
     </div>

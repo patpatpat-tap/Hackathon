@@ -9,7 +9,9 @@ import { createClient } from '@/app/utils/supabase';
 export default function HeatmapComponent() {
   const mapRef = useRef<L.Map | null>(null);
   const heatLayerRef = useRef<any>(null);
+  const alertsLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const [pings, setPings] = useState<any[]>([]);
+  const [floodAlerts, setFloodAlerts] = useState<any[]>([]);
   const [activeDrivers, setActiveDrivers] = useState(0);
 
   useEffect(() => {
@@ -22,39 +24,52 @@ export default function HeatmapComponent() {
         subdomains: 'abcd',
         maxZoom: 20,
       }).addTo(mapRef.current);
+      
+      alertsLayerGroupRef.current = L.layerGroup().addTo(mapRef.current);
     }
 
-    // Fetch initial pings
-    const fetchPings = async () => {
-      const supabase = createClient();
-      const { data, error } = await supabase
+    const supabase = createClient();
+
+    // Fetch initial pings and alerts
+    const fetchData = async () => {
+      const { data: pingsData } = await supabase
         .from('pings')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(100);
 
-      if (!error && data) {
-        setPings(data);
-      }
+      if (pingsData) setPings(pingsData);
+
+      const { data: alertsData } = await supabase
+        .from('flood_alerts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+        
+      if (alertsData) setFloodAlerts(alertsData);
     };
 
-    fetchPings();
+    fetchData();
 
-    // Subscribe to real-time updates
-    const supabase = createClient();
-    const subscription = supabase
+    // Subscribe to real-time updates for pings
+    const pingsSubscription = supabase
       .channel('pings_realtime')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'pings' },
-        (payload) => {
-          setPings((prev) => [payload.new, ...prev.slice(0, 99)]);
-        }
-      )
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pings' }, (payload) => {
+        setPings((prev) => [payload.new, ...prev.slice(0, 99)]);
+      })
+      .subscribe();
+      
+    // Subscribe to real-time updates for flood alerts
+    const alertsSubscription = supabase
+      .channel('alerts_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'flood_alerts' }, (payload) => {
+        setFloodAlerts((prev) => [payload.new, ...prev.slice(0, 49)]);
+      })
       .subscribe();
 
     return () => {
-      subscription.unsubscribe();
+      pingsSubscription.unsubscribe();
+      alertsSubscription.unsubscribe();
     };
   }, []);
 
@@ -89,54 +104,92 @@ export default function HeatmapComponent() {
     }
   }, [pings]);
 
+  // Update flood alerts layer
+  useEffect(() => {
+    if (mapRef.current && alertsLayerGroupRef.current) {
+      alertsLayerGroupRef.current.clearLayers();
+
+      floodAlerts.forEach((alert) => {
+        const isFlood = alert.type === 'flood';
+        const color = isFlood ? '#3b82f6' : '#8b5cf6'; // Blue for flood, Purple for rainfall
+        
+        // Add a circle for the zone
+        L.circle([parseFloat(alert.lat), parseFloat(alert.lng)], {
+          color: color,
+          fillColor: color,
+          fillOpacity: 0.4,
+          radius: 150, // 150 meters radius
+          weight: 2,
+        }).addTo(alertsLayerGroupRef.current!);
+
+        // Add a marker in the center
+        const iconHtml = `<div style="background-color: ${color}; width: 24px; height: 24px; border-radius: 50%; border: 2px solid white; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 10px ${color}; font-size: 12px; font-weight: bold; color: white;">!</div>`;
+        
+        const customIcon = L.divIcon({
+          html: iconHtml,
+          className: 'custom-alert-icon',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+        });
+
+        L.marker([parseFloat(alert.lat), parseFloat(alert.lng)], { icon: customIcon })
+          .bindPopup(`<b>${isFlood ? 'Flooded Route' : 'Heavy Rainfall'}</b><br/>Reported at ${new Date(alert.created_at).toLocaleTimeString()}`)
+          .addTo(alertsLayerGroupRef.current!);
+      });
+    }
+  }, [floodAlerts]);
+
   return (
-    <div className="w-full h-screen flex flex-col bg-black relative">
+    <div className="w-full h-screen flex flex-col bg-black relative font-sans">
       {/* Header */}
-      <div className="bg-gradient-to-r from-black to-gray-900 border-b-2 border-yellow-400 py-4 px-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-yellow-400">SugboPulse Driver Map</h1>
-            <p className="text-gray-300 text-sm mt-1">🔴 Red zones = high demand. 🟡 Yellow = medium. 🟢 Green = low</p>
-          </div>
-          <div className="bg-yellow-400 text-black px-4 py-3 rounded-lg font-bold text-lg">
-            🚗 {activeDrivers} Active Requests
-          </div>
+      <div className="bg-[#0b0f19] border-b border-yellow-400 py-4 px-6 flex items-center justify-between z-10">
+        <div>
+          <h1 className="text-2xl font-bold text-yellow-400 tracking-wide">SugboPulse Driver Map</h1>
+          <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
+            {activeDrivers} Active Requests
+          </p>
         </div>
+        <a
+          href="/"
+          className="bg-[#ffd700] hover:bg-yellow-500 text-black px-6 py-2 rounded-md font-bold text-sm transition-colors shadow-[0_0_10px_rgba(255,215,0,0.3)]"
+        >
+          Commuter View
+        </a>
       </div>
 
       {/* Map Container */}
-      <div id="map-container" className="flex-1" />
+      <div id="map-container" className="flex-1 z-0" />
 
-      {/* Legend - Fixed Positioning */}
-      <div className="fixed bottom-6 left-6 w-64 bg-black border-2 border-yellow-400 rounded-lg p-4 text-white z-50 shadow-lg">
-        <h3 className="font-bold text-yellow-400 mb-3 text-base">Heatmap Legend</h3>
-        <div className="space-y-2 text-sm">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-green-500 rounded-full flex-shrink-0"></div>
-            <span className="text-gray-200">Low demand (1-10)</span>
+      {/* Legend - Fixed Positioning (Bottom Left) */}
+      <div className="absolute bottom-8 left-6 w-48 bg-black/90 border border-yellow-400 rounded-lg p-4 text-white z-[1000] shadow-lg backdrop-blur-sm">
+        <h3 className="font-bold text-yellow-400 mb-4 text-sm tracking-widest uppercase">Demand Levels</h3>
+        <div className="space-y-3 text-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-4 h-4 bg-[#00ff00] rounded flex-shrink-0 shadow-[0_0_8px_rgba(0,255,0,0.6)]"></div>
+            <span className="text-gray-300 font-medium">Low</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-yellow-400 rounded-full flex-shrink-0"></div>
-            <span className="text-gray-200">Medium demand (10-30)</span>
+          <div className="flex items-center gap-3">
+            <div className="w-4 h-4 bg-[#ffff00] rounded flex-shrink-0 shadow-[0_0_8px_rgba(255,255,0,0.6)]"></div>
+            <span className="text-gray-300 font-medium">Medium</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 bg-red-500 rounded-full flex-shrink-0"></div>
-            <span className="text-gray-200">High demand (30+)</span>
+          <div className="flex items-center gap-3">
+            <div className="w-4 h-4 bg-[#ff3333] rounded flex-shrink-0 shadow-[0_0_8px_rgba(255,51,51,0.6)]"></div>
+            <span className="text-gray-300 font-medium">High</span>
           </div>
         </div>
       </div>
 
-      {/* Stats Panel - Fixed Positioning */}
-      <div className="fixed top-24 right-6 w-64 bg-black border-2 border-yellow-400 rounded-lg p-4 text-white z-50 shadow-lg">
-        <h3 className="font-bold text-yellow-400 mb-3 text-base">Quick Stats</h3>
-        <div className="space-y-2">
-          <div className="flex justify-between">
-            <span className="text-gray-200">Live Requests:</span>
-            <span className="text-yellow-400 font-bold">{activeDrivers}</span>
+      {/* Stats Panel - Fixed Positioning (Top Right) */}
+      <div className="absolute top-24 right-6 w-56 bg-black/90 border border-yellow-400 rounded-lg p-5 text-white z-[1000] shadow-lg backdrop-blur-sm">
+        <h3 className="font-bold text-yellow-400 mb-4 text-sm tracking-widest uppercase">Live Stats</h3>
+        <div className="space-y-4">
+          <div>
+            <div className="text-gray-400 text-xs mb-1">Active Requests</div>
+            <div className="text-white font-bold text-xl">{activeDrivers}</div>
           </div>
-          <div className="flex justify-between text-sm text-gray-400">
-            <span>Last Updated:</span>
-            <span>{new Date().toLocaleTimeString()}</span>
+          <div>
+            <div className="text-gray-400 text-xs mb-1">Last Updated</div>
+            <div className="text-white text-sm">{new Date().toLocaleTimeString()}</div>
           </div>
         </div>
       </div>
