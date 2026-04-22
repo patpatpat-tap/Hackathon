@@ -6,6 +6,23 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import { createClient } from '@/app/utils/supabase';
 
+// ─── UTILITY: DISTANCE CALCULATION ──────────────────────────────────────────
+function getDistanceFromLatLonInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371; // Radius of the earth in km
+  const dLat = deg2rad(lat2 - lat1);
+  const dLon = deg2rad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Distance in km
+}
+
+function deg2rad(deg: number) {
+  return deg * (Math.PI / 180);
+}
+
 // ─── MOCK DATASET ─────────────────────────────────────────────────────────────
 // Realistic ride-request hotspots around Cebu's BPO corridors.
 // Format: [lat, lng, intensity]  (intensity 0–1)
@@ -87,7 +104,9 @@ export default function HeatmapComponent() {
   const heatLayerRef = useRef<any>(null);
   const hazardsLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const [activeRequests, setActiveRequests] = useState(MOCK_PINGS.length);
+  const [hazardsCount, setHazardsCount] = useState(MOCK_HAZARDS.length);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const allPingsRef = useRef<[number, number, number][]>(MOCK_PINGS);
 
   useEffect(() => {
     // ── Initialize map ──────────────────────────────────────────────────────
@@ -101,6 +120,31 @@ export default function HeatmapComponent() {
       }).addTo(mapRef.current);
 
       hazardsLayerGroupRef.current = L.layerGroup().addTo(mapRef.current);
+
+      // ── Map Click Event for Hotspot Details ─────────────────────────
+      mapRef.current.on('click', (e) => {
+        const { lat, lng } = e.latlng;
+        const RADIUS_KM = 0.5; // 500 meters
+
+        let count = 0;
+        allPingsRef.current.forEach((ping) => {
+          const dist = getDistanceFromLatLonInKm(lat, lng, ping[0], ping[1]);
+          if (dist <= RADIUS_KM) {
+            count++;
+          }
+        });
+
+        L.popup()
+          .setLatLng(e.latlng)
+          .setContent(`
+            <div style="text-align: center; font-family: sans-serif; padding: 5px;">
+              <h3 style="margin: 0 0 5px 0; font-size: 14px; color: #666; text-transform: uppercase; letter-spacing: 1px;">Area Demand</h3>
+              <div style="font-size: 28px; font-weight: bold; color: ${count > 5 ? '#ef4444' : count > 0 ? '#eab308' : '#22c55e'}; margin-bottom: 2px;">${count}</div>
+              <div style="font-size: 13px; color: #444; font-weight: 500;">Passenger${count !== 1 ? 's' : ''} Nearby</div>
+            </div>
+          `)
+          .openOn(mapRef.current!);
+      });
     }
 
     // ── Render mock heatmap ─────────────────────────────────────────────────
@@ -125,10 +169,17 @@ export default function HeatmapComponent() {
     }
 
     // ── Render road hazards: pins only ────────────────────────────────────────
-    if (hazardsLayerGroupRef.current) {
+    const renderHazards = () => {
+      if (!hazardsLayerGroupRef.current) return;
       hazardsLayerGroupRef.current.clearLayers();
 
-      MOCK_HAZARDS.forEach((hazard) => {
+      const localHazardsStr = localStorage.getItem('hackathon_hazards');
+      const localHazards = localHazardsStr ? JSON.parse(localHazardsStr) : [];
+      const allHazards = [...MOCK_HAZARDS, ...localHazards];
+      
+      setHazardsCount(allHazards.length);
+
+      allHazards.forEach((hazard) => {
         // Hazard pin icon
         const iconHtml = `<div style="background:#ef4444;width:28px;height:28px;border-radius:50%;border:2px solid white;display:flex;align-items:center;justify-content:center;box-shadow:0 0 14px rgba(239,68,68,0.8);font-size:14px;">⚠️</div>`;
         const customIcon = L.divIcon({
@@ -138,11 +189,19 @@ export default function HeatmapComponent() {
           iconAnchor: [14, 14],
         });
 
+        let popupContent = `<b>${hazard.label}</b><br/>Reported ${new Date(hazard.reported).toLocaleTimeString()}`;
+        if (hazard.photo) {
+          popupContent += `<br/><img src="${hazard.photo}" style="width: 150px; height: auto; border-radius: 8px; margin-top: 8px; object-fit: cover; border: 1px solid #444;" />`;
+        }
+
         L.marker([hazard.markerLat, hazard.markerLng], { icon: customIcon })
-          .bindPopup(`<b>${hazard.label}</b><br/>Reported ${new Date(hazard.reported).toLocaleTimeString()}`)
+          .bindPopup(popupContent)
           .addTo(hazardsLayerGroupRef.current!);
       });
-    }
+    };
+
+    renderHazards();
+    window.addEventListener('storage', renderHazards);
 
     // ── Try to merge real Supabase data on top if available ─────────────────
     const supabase = createClient();
@@ -163,6 +222,7 @@ export default function HeatmapComponent() {
           ]);
 
           const combined = [...MOCK_PINGS, ...livePings];
+          allPingsRef.current = combined;
 
           if (heatLayerRef.current) mapRef.current.removeLayer(heatLayerRef.current);
 
@@ -196,6 +256,7 @@ export default function HeatmapComponent() {
               ];
               // @ts-ignore
               heatLayerRef.current.addLatLng(newPoint);
+              allPingsRef.current.push(newPoint);
               setActiveRequests((prev) => prev + 1);
               setLastUpdated(new Date());
             }
@@ -207,6 +268,10 @@ export default function HeatmapComponent() {
     };
 
     fetchLiveData();
+
+    return () => {
+      window.removeEventListener('storage', renderHazards);
+    };
   }, []);
 
   return (
@@ -263,7 +328,7 @@ export default function HeatmapComponent() {
           </div>
           <div>
             <div className="text-gray-400 text-xs mb-1">Road Hazards</div>
-            <div className="text-white font-bold text-xl">{MOCK_HAZARDS.length}</div>
+            <div className="text-white font-bold text-xl">{hazardsCount}</div>
           </div>
           <div>
             <div className="text-gray-400 text-xs mb-1">Last Updated</div>

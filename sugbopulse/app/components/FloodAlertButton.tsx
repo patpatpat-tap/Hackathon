@@ -6,6 +6,7 @@ import { createClient } from '@/app/utils/supabase';
 export default function FloodAlertButton() {
   const [isOpen, setIsOpen] = useState(false);
   const [proofFile, setProofFile] = useState<File | null>(null);
+  const [hazardType, setHazardType] = useState('Flood');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,44 +28,68 @@ export default function FloodAlertButton() {
       return;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const { latitude, longitude } = position.coords;
-        const supabase = createClient();
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64data = reader.result as string;
 
-        // In a real app, upload the proofFile to Supabase Storage first.
-        const mockProofUrl = `mock-url-${Date.now()}.jpg`;
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const { latitude, longitude } = position.coords;
+          const supabase = createClient();
 
-        const { error: insertError } = await supabase.from('flood_alerts').insert([
-          {
-            lat: latitude,
-            lng: longitude,
-            type: 'flood', // Only flood alert now
-            proof_url: mockProofUrl,
-          },
-        ]);
+          // In a real app, upload the proofFile to Supabase Storage first.
+          const mockProofUrl = `mock-url-${Date.now()}.jpg`;
 
-        setIsSubmitting(false);
+          const { error: insertError } = await supabase.from('flood_alerts').insert([
+            {
+              lat: latitude,
+              lng: longitude,
+              type: hazardType.toLowerCase(),
+              proof_url: mockProofUrl,
+            },
+          ]);
 
-        // For the Hackathon MVP demo, we will always show success 
-        // even if the Supabase table hasn't been created yet, to avoid blocking the presentation
-        if (insertError) {
-          console.error("Supabase error (bypassed for demo):", insertError);
+          // Save to local storage for the driver map demo
+          const newHazard = {
+            id: 'hazard-' + Date.now(),
+            label: hazardType === 'Flood' ? '🌊 Flooding — Road Impassable' : 
+                   hazardType === 'Accident' ? '🚗 Accident — Lane Blocked' : 
+                   hazardType === 'Roadblock' ? '🚧 Roadblock — Area Closed' : 
+                   '⚠️ Other Hazard',
+            markerLat: latitude,
+            markerLng: longitude,
+            reported: new Date().toISOString(),
+            photo: base64data
+          };
+          
+          const existingHazards = JSON.parse(localStorage.getItem('hackathon_hazards') || '[]');
+          existingHazards.push(newHazard);
+          localStorage.setItem('hackathon_hazards', JSON.stringify(existingHazards));
+          
+          // Dispatch event so map updates immediately if in same window
+          window.dispatchEvent(new Event('storage'));
+
+          setIsSubmitting(false);
+
+          if (insertError) {
+            console.error("Supabase error (bypassed for demo):", insertError);
+          }
+
+          setSuccess(true);
+          setTimeout(() => {
+            setIsOpen(false);
+            setSuccess(false);
+            setProofFile(null); // Reset proof file
+          }, 3000);
+        },
+        (geoError) => {
+          console.error("Geolocation error:", geoError);
+          setError('Failed to get your location. Please enable location services.');
+          setIsSubmitting(false);
         }
-
-        setSuccess(true);
-        setTimeout(() => {
-          setIsOpen(false);
-          setSuccess(false);
-          setProofFile(null); // Reset proof file
-        }, 3000);
-      },
-      (geoError) => {
-        console.error("Geolocation error:", geoError);
-        setError('Failed to get your location. Please enable location services.');
-        setIsSubmitting(false);
-      }
-    );
+      );
+    };
+    reader.readAsDataURL(proofFile);
   };
 
   return (
@@ -84,19 +109,33 @@ export default function FloodAlertButton() {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
           <div className="bg-gray-900 border-2 border-red-500 rounded-xl p-6 w-full max-w-md shadow-[0_0_20px_rgba(255,0,0,0.3)]">
             <h2 className="text-2xl font-bold text-red-500 mb-4 flex items-center gap-2">
-              Flood Alert
+              Road Hazard Alert
             </h2>
             
             {success ? (
               <div className="text-center py-8">
-                <h3 className="text-xl font-bold text-white mb-2">Flood Reported!</h3>
+                <h3 className="text-xl font-bold text-white mb-2">Hazard Reported!</h3>
                 <p className="text-gray-400">Drivers have been notified to reroute. Thank you for keeping the community safe.</p>
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
+                  <label className="block text-gray-300 font-semibold mb-2">Type of Hazard</label>
+                  <select 
+                    value={hazardType} 
+                    onChange={(e) => setHazardType(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-600 text-white rounded-lg p-3 outline-none focus:border-red-500 transition-colors"
+                  >
+                    <option value="Flood">🌊 Flood</option>
+                    <option value="Accident">🚗 Accident</option>
+                    <option value="Roadblock">🚧 Roadblock</option>
+                    <option value="Other">⚠️ Other</option>
+                  </select>
+                </div>
+
+                <div>
                   <label className="block text-gray-300 font-semibold mb-2">Proof of Condition</label>
-                  <p className="text-xs text-gray-400 mb-2">To prevent false alarms, please capture a quick photo of the flood.</p>
+                  <p className="text-xs text-gray-400 mb-2">To prevent false alarms, please capture a quick photo of the hazard.</p>
                   <div className="flex items-center justify-center w-full">
                     <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-600 border-dashed rounded-lg cursor-pointer bg-gray-800 hover:bg-gray-700 transition-colors">
                       <div className="flex flex-col items-center justify-center pt-5 pb-6">
@@ -130,7 +169,7 @@ export default function FloodAlertButton() {
                     disabled={isSubmitting}
                     className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-lg transition-colors flex items-center justify-center disabled:opacity-50 border border-red-500"
                   >
-                    {isSubmitting ? 'Sending...' : 'Alert Drivers'}
+                    {isSubmitting ? 'Sending...' : 'REPORT'}
                   </button>
                 </div>
               </form>
